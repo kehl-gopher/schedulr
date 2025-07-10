@@ -8,7 +8,6 @@ task.complete
 # Test binary, built with `go test -c`
 *.test
 
-*_test.go
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*
