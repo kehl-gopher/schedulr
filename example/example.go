@@ -15,12 +15,21 @@ func sleepTask() {
 }
 
 func main() {
-	task := schedulr.Task{
-		Job: func() error {
-			sleepTask()
-			return nil
-		},
-	}
+	// task := schedulr.Task{
+	// 	RunAt: time.Now().Add(3 * time.Second),
+	// 	Job: func() error {
+	// 		sleepTask()
+	// 		return nil
+	// 	},
+	// }
+	// 
+	task := schedulr.NewTask(
+		func() error {
+		sleepTask()
+		return nil
+	}, 
+	"a sleep task",
+	time.Time{}, 0)
 	sch, _ := schedulr.SchedulerInit()
 	sch.AddJobs(task)
 
@@ -30,6 +39,8 @@ func main() {
 
 	fmt.Println("still running main")
 
-	time.Sleep(7 * time.Second)
+	time.Sleep(10 * time.Second)
 	sch.ShutDown()
+
+	fmt.Println("finished running task...")
 }
