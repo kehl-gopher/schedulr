@@ -11,7 +11,7 @@ import (
 )
 
 func TestSchedulrStart(t *testing.T) {
-	s, _ := schedulr.SchedulerInit()
+	s := schedulr.SchedulerInit()
 	s.Start()
 	defer s.ShutDown()
 
@@ -23,8 +23,8 @@ func TestSchedulrStart(t *testing.T) {
 		return nil
 	}
 
-	task := schedulr.NewTask(job, "a job", time.Time{}, 0)
-	s.AddJobs(task)
+	task := schedulr.NewTask(1*time.Second, job)
+	s.Submit(task)
 
 	select {
 	case <-done:
@@ -34,7 +34,7 @@ func TestSchedulrStart(t *testing.T) {
 }
 
 func TestWriteToFileJob(t *testing.T) {
-	s, _ := schedulr.SchedulerInit()
+	s := schedulr.SchedulerInit()
 	s.Start()
 	defer s.ShutDown()
 
@@ -50,8 +50,8 @@ func TestWriteToFileJob(t *testing.T) {
 		close(done)
 		return err
 	}
-	task := schedulr.NewTask(job, "a job", time.Time{}, 0)
-	s.AddJobs(task)
+	task := schedulr.NewTask(2*time.Second, job)
+	s.Submit(task)
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -60,7 +60,7 @@ func TestWriteToFileJob(t *testing.T) {
 }
 
 func TestComputePrimeJob(t *testing.T) {
-	s, _ := schedulr.SchedulerInit()
+	s := schedulr.SchedulerInit()
 	s.Start()
 	defer s.ShutDown()
 
@@ -85,8 +85,8 @@ func TestComputePrimeJob(t *testing.T) {
 		return nil
 	}
 
-	task := schedulr.NewTask(job, "a job", time.Time{}, 0)
-	s.AddJobs(task)
+	task := schedulr.NewTask(1*time.Second, job)
+	s.Submit(task)
 
 	select {
 	case <-done:
@@ -97,7 +97,7 @@ func TestComputePrimeJob(t *testing.T) {
 }
 
 func TestSchedulrScheduledAt(t *testing.T) {
-	s, _ := schedulr.SchedulerInit()
+	s := schedulr.SchedulerInit()
 
 	s.Start()
 	defer s.ShutDown()
@@ -110,8 +110,15 @@ func TestSchedulrScheduledAt(t *testing.T) {
 	}
 	runAt := time.Now().Add(1 * time.Second)
 
-	task := schedulr.NewTask(job, "a job", runAt, 0)
-	s.ScheduledAt(task)
+	id, err := s.ScheduleOnce(job, runAt)
+
+	if id == "" {
+		t.Error("no id generated for task scheduled")
+	}
+
+	if err != nil {
+		t.Error("error should be nil")
+	}
 
 	select {
 	case <-done:
@@ -122,7 +129,7 @@ func TestSchedulrScheduledAt(t *testing.T) {
 }
 
 func TestSchedulrScheduledTck(t *testing.T) {
-	s, _ := schedulr.SchedulerInit()
+	s := schedulr.SchedulerInit()
 
 	s.Start()
 	defer s.ShutDown()
@@ -133,20 +140,23 @@ func TestSchedulrScheduledTck(t *testing.T) {
 		t.Log("interval job ran")
 		return nil
 	}
-
-	task := schedulr.NewTask(job, "a job", time.Time{}, 300*time.Millisecond)
-	s.SheduleInterval(task)
-
+	id, err := s.ScheduleRecurring(job, 300*time.Millisecond)
+	if id == "" {
+		t.Error("no id generated for task scheduled")
+	}
+	if err != nil {
+		t.Error("error should be nil")
+	}
 	// Wait up to 1.2s (expect at least 3 runs)
 	time.Sleep(1250 * time.Millisecond)
-
+	s.Cancel(id)
 	if atomic.LoadInt32(&count) < 3 {
 		t.Fatalf("expected at least 3 runs, got %d", count)
 	}
 	t.Logf("interval job ran %d times", count)
 }
 func TestDelayedJob(t *testing.T) {
-	s, _ := schedulr.SchedulerInit()
+	s := schedulr.SchedulerInit()
 	s.Start()
 	defer s.ShutDown()
 
@@ -158,16 +168,16 @@ func TestDelayedJob(t *testing.T) {
 		return nil
 	}
 
-	task := schedulr.NewTask(job, "a job", time.Time{}, 0)
+	task := schedulr.NewTask(1*time.Second, job)
 	go func() {
-		time.Sleep(1 * time.Second)
-		s.AddJobs(task)
+		time.Sleep(3 * time.Second)
+		s.Submit(task)
 	}()
 
 	select {
 	case <-done:
 		t.Log("job completed on schedule")
-	case <-time.After(2 * time.Second):
+	case <-time.After(4 * time.Second):
 		t.Fatal("delayed job did not run")
 	}
 }

@@ -3,138 +3,170 @@ package schedulr
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 )
 
 type JobFunc func() error
 
 type Scheduler interface {
-	// start a task to run immediately
 	Start()
-
-	// shutdown scheduler and throw error if not shutting down
 	ShutDown() error
-
-	// add jobs to scheduler channels for task
-	AddJobs(task task)
-
-	// stop task preferable use with defer
-	Stop()
-
-	// Schedule a task to run at a specific time
-	ScheduledAt(t task)
-	// Schedule a task to run every X interval
-	SheduleInterval(t task) error
+	ScheduleOnce(job JobFunc, at time.Time) (string, error)
+	ScheduleRecurring(job JobFunc, interval time.Duration) (string, error)
+	Submit(t task) string
+	Cancel(id string) error
 }
 
 type schedulr struct {
-	shutDownCtx  context.Context
-	jobs         chan task
-	runAt        chan time.Timer    // run schedulr at the specific time provided
-	delay        chan time.Timer    // delay schedulr run at a specific time
-	tickJobs     chan time.Duration // run schedulr every minute, seconds or daily
-	stopTime     chan time.Time
-	cancelJobCtx context.Context // cancel jobs within context timeout
-	cancelJobs   context.CancelFunc
-	// cancelJobId  string // cancel job using job id
-	cancel chan struct{}
+	schedulrLock *sync.Mutex
+	tasks        map[string]task
+	jobQueue     chan task
+	stopChan     chan struct{}
+	wg           *sync.WaitGroup
 }
 
 type task struct {
-	id       string
-	Job      JobFunc
-	tag     string
-	runAt    time.Time     // schedule when task should run...
-	interval time.Duration // run task every specified interval
+	id          string
+	job         JobFunc
+	taskTimeOut time.Duration
+	cancel      context.CancelFunc
 }
 
-
-func NewTask(job JobFunc, tag string, runAt time.Time, interval time.Duration) task{
-	return task{
-		id: "", 
-		Job: job,
-		tag: tag,
-		runAt: runAt,
-		interval: interval,
-	}
-}
-// instantiate scheduler
-func SchedulerInit() (Scheduler, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+func SchedulerInit() Scheduler {
 	sch := &schedulr{
-		jobs:         make(chan task, 100),
-		shutDownCtx:  ctx,
-		runAt:        make(chan time.Timer),
-		delay:        make(chan time.Timer),
-		stopTime:     make(chan time.Time),
-		cancelJobCtx: ctx,
-		cancelJobs:   cancel,
-		cancel:       make(chan struct{}),
+		schedulrLock: new(sync.Mutex),
+		tasks:        make(map[string]task),
+		jobQueue:     make(chan task, 100),
+		stopChan:     make(chan struct{}),
+		wg:           new(sync.WaitGroup),
 	}
-	// start jobs scheduler
-	return sch, nil
+
+	return sch
 }
 
-// start static number of workers to run task for now
 func (s *schedulr) Start() {
-	for i := 0; i < 5; i++ {
-		go func(workerId int) {
+	for i := 1; i <= 5; i++ {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
 			for {
 				select {
-				case t := <-s.jobs:
-					//TODO: handle error properly... with channels
-					if err := t.Job(); err != nil {
-						fmt.Println(err.Error()) 
+				case task, ok := <-s.jobQueue:
+					if ok {
+						var done = make(chan error)
+						ctx, cancel := context.WithTimeout(context.Background(), task.taskTimeOut)
+						defer cancel()
+						go func() {
+							done <- task.job()
+						}()
+						select {
+						case <-ctx.Done():
+							fmt.Printf("task with %s timeout", task.id)
+						case err := <-done:
+							if err != nil {
+								fmt.Printf("task id %s: failed to run task: %s", task.id, err.Error())
+							}
+						}
 					}
-				case <-s.cancel:
+				case <-s.stopChan:
+					fmt.Println("scheduled task stop")
 					return
 				}
 			}
-		}(i)
+		}()
 	}
 }
 
-// add user provided task to chan
-func (s *schedulr) AddJobs(task task) {
-	s.jobs <- task
+func NewTask(timeOut time.Duration, job JobFunc) task {
+	return task{id: generateId(), taskTimeOut: timeOut, job: job}
 }
 
-// handle stop jobs
-func (s *schedulr) Stop() {
-}
+func (s *schedulr) ScheduleOnce(job JobFunc, at time.Time) (string, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	id := generateId()
 
-// TODO: handle shutdown error
-func (s *schedulr) ShutDown() error {
-	select {
-	case <-s.shutDownCtx.Done():
-		close(s.cancel)
-	default:
+	t := task{
+		id:     id,
+		job:    job,
+		cancel: cancel,
 	}
-	return nil
-}
 
-func (s *schedulr) ScheduledAt(t task) {
+	delay := time.Until(at)
+
+	s.schedulrLock.Lock()
+	s.tasks[id] = t
+	s.schedulrLock.Unlock()
+
+	after := time.NewTimer(delay)
 	go func() {
-		<-time.After(time.Until(t.runAt))
-		s.jobs <- t
+		select {
+		case <-after.C:
+			s.Submit(t)
+		case <-ctx.Done():
+			after.Stop()
+		}
 	}()
+	return id, nil
 }
 
-func (s *schedulr) SheduleInterval(t task) error {
-	var err error
-	tick := time.NewTicker(t.interval)
+func (s *schedulr) Submit(t task) string {
+	s.jobQueue <- t
+	return t.id
+}
+
+func (sch *schedulr) ScheduleRecurring(job JobFunc, interval time.Duration) (string, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	id := generateId()
+
+	t := task{
+		id:     id,
+		job:    job,
+		cancel: cancel,
+	}
+	sch.schedulrLock.Lock()
+	sch.tasks[id] = t
+	sch.schedulrLock.Unlock()
+
+	tick := time.NewTicker(interval)
+
 	go func() {
-		defer tick.Stop()
 		for {
 			select {
 			case <-tick.C:
-				if err := t.Job(); err != nil {
-					fmt.Println(err.Error())
-				}
-			case <-s.cancel:
+				sch.Submit(t)
+			case <-ctx.Done():
+				tick.Stop()
 				return
 			}
 		}
 	}()
-	return err
+	return id, nil
+}
+
+func (sch *schedulr) Cancel(id string) error {
+	sch.schedulrLock.Lock()
+	defer sch.schedulrLock.Unlock()
+
+	task, ok := sch.tasks[id]
+	if !ok {
+		return fmt.Errorf("task not found: %s", id)
+	}
+	task.cancel()
+	delete(sch.tasks, id)
+	return nil
+}
+
+func (sch *schedulr) ShutDown() error {
+	close(sch.stopChan)
+	sch.wg.Wait()
+	sch.schedulrLock.Lock()
+	for _, t := range sch.tasks {
+		if t.cancel != nil {
+			t.cancel()
+		}
+	}
+	sch.schedulrLock.Unlock()
+	close(sch.jobQueue)
+	return nil
 }
