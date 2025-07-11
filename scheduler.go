@@ -70,7 +70,6 @@ func (s *schedulr) Start() {
 						}
 					}
 				case <-s.stopChan:
-					fmt.Println("scheduled task stop")
 					return
 				}
 			}
@@ -148,8 +147,8 @@ func (sch *schedulr) Cancel(id string) error {
 	sch.schedulrLock.Lock()
 	defer sch.schedulrLock.Unlock()
 
-	task, ok := sch.tasks[id]
-	if !ok {
+	task, exist := sch.tasks[id]
+	if !exist {
 		return fmt.Errorf("task not found: %s", id)
 	}
 	task.cancel()
