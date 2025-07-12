@@ -49,8 +49,8 @@ type JobFunc func() error
 type Scheduler interface {
 	scaleWorker()
 	ShutDown() error
-	ScheduleOnce(job JobFunc, at time.Time) (string, error)
-	ScheduleRecurring(job JobFunc, interval time.Duration) (string, error)
+	ScheduleOnce(job JobFunc, at time.Time, priority int) (string, error)
+	ScheduleRecurring(job JobFunc, interval time.Duration, priority int) (string, error)
 	Submit(t task) string
 	Cancel(id string) error
 	dequeueAndRun()
@@ -170,7 +170,7 @@ func NewTask(timeOut time.Duration, job JobFunc, priority int) task {
 	return task{id: generateId(), taskTimeOut: timeOut, job: job, priority: priority}
 }
 
-func (s *schedulr) ScheduleOnce(job JobFunc, at time.Time) (string, error) {
+func (s *schedulr) ScheduleOnce(job JobFunc, at time.Time, priority int) (string, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	id := generateId()
 
@@ -178,6 +178,7 @@ func (s *schedulr) ScheduleOnce(job JobFunc, at time.Time) (string, error) {
 		id:     id,
 		job:    job,
 		cancel: cancel,
+		priority: priority,
 	}
 
 	delay := time.Until(at)
@@ -205,14 +206,15 @@ func (s *schedulr) Submit(t task) string {
 	return t.id
 }
 
-func (sch *schedulr) ScheduleRecurring(job JobFunc, interval time.Duration) (string, error) {
+func (sch *schedulr) ScheduleRecurring(job JobFunc, interval time.Duration, priority int) (string, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	id := generateId()
 
 	t := task{
-		id:     id,
-		job:    job,
-		cancel: cancel,
+		id:       id,
+		job:      job,
+		cancel:   cancel,
+		priority: priority,
 	}
 	sch.schedulrLock.Lock()
 	sch.tasks[id] = t
@@ -224,7 +226,8 @@ func (sch *schedulr) ScheduleRecurring(job JobFunc, interval time.Duration) (str
 		for {
 			select {
 			case <-tick.C:
-				sch.Submit(t)
+				newTask := NewTask(interval, job, priority) // create an instance of each task and add to queue
+				sch.Submit(newTask)
 			case <-ctx.Done():
 				tick.Stop()
 				return

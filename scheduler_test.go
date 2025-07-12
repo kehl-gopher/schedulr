@@ -2,6 +2,7 @@ package schedulr_test
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,7 +14,6 @@ func TestSubmitAndExecuteTask(t *testing.T) {
 	defer sch.ShutDown()
 
 	done := make(chan bool)
-	fmt.Println("------------------>")
 	task := schedulr.NewTask(2*time.Second, func() error {
 		fmt.Println("[Task Simple] Running")
 		done <- true
@@ -54,7 +54,7 @@ func TestScheduleOnce(t *testing.T) {
 		fmt.Println("[ScheduledOnce] Executed")
 		done <- true
 		return nil
-	}, time.Now().Add(1*time.Second))
+	}, time.Now().Add(1*time.Second), 3)
 
 	if err != nil {
 		t.Fatalf("failed to schedule once: %v", err)
@@ -81,7 +81,7 @@ func TestScheduleRecurringAndCancel(t *testing.T) {
 			done <- true
 		}
 		return nil
-	}, 1*time.Second)
+	}, 1*time.Second, 2)
 
 	if err != nil {
 		t.Fatalf("failed to schedule recurring: %v", err)
@@ -104,7 +104,7 @@ func TestCancelScheduledTask(t *testing.T) {
 	id, err := sch.ScheduleOnce(func() error {
 		executed = true
 		return nil
-	}, time.Now().Add(2*time.Second))
+	}, time.Now().Add(2*time.Second), 1)
 
 	if err != nil {
 		t.Fatalf("failed to schedule task: %v", err)
@@ -153,5 +153,45 @@ func TestPriorityTaskExecutionOrder(t *testing.T) {
 		if executedOrder[i] != expected[i] {
 			t.Errorf("expected task %s at position %d, got %s", expected[i], i, executedOrder[i])
 		}
+	}
+}
+
+func TestRecurringTaskIsNonBlocking(t *testing.T) {
+	sch := schedulr.SchedulerInit()
+	defer sch.ShutDown()
+
+	var mu sync.Mutex
+	executions := 0
+	done := make(chan struct{})
+
+	longJob := func() error {
+		mu.Lock()
+		executions++
+		fmt.Printf("[LongRecurring] Execution #%d\n", executions)
+		mu.Unlock()
+		time.Sleep(3 * time.Second)
+		return nil
+	}
+
+	_, err := sch.ScheduleRecurring(longJob, 2*time.Second, 2)
+	if err != nil {
+		t.Fatalf("Failed to schedule recurring task: %v", err)
+	}
+
+	fastJob := func() error {
+		fmt.Println("[FastTask] Executed")
+		close(done)
+		return nil
+	}
+
+	_, err = sch.ScheduleOnce(fastJob, time.Now().Add(1*time.Second), 5)
+	if err != nil {
+		t.Fatalf("Failed to schedule one-time task: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("Recurring task blocked other tasks from running")
 	}
 }
