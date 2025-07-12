@@ -2,208 +2,156 @@ package schedulr_test
 
 import (
 	"fmt"
-	"os"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kehl-gopher/schedulr"
 )
 
-func TestSchedulrStart(t *testing.T) {
-	s := schedulr.SchedulerInit()
-	s.Start()
-	defer s.ShutDown()
+func TestSubmitAndExecuteTask(t *testing.T) {
+	sch := schedulr.SchedulerInit()
+	defer sch.ShutDown()
 
-	done := make(chan struct{})
-
-	job := func() error {
-		fmt.Println("Hello from test job")
-		close(done)
+	done := make(chan bool)
+	fmt.Println("------------------>")
+	task := schedulr.NewTask(2*time.Second, func() error {
+		fmt.Println("[Task Simple] Running")
+		done <- true
 		return nil
-	}
+	}, 5)
 
-	task := schedulr.NewTask(1*time.Second, job)
-	s.Submit(task)
+	sch.Submit(task)
 
 	select {
 	case <-done:
-	case <-time.After(1 * time.Second):
-		t.Fatal("job did not run in time")
+		fmt.Println("[Task Simple] Completed")
+	case <-time.After(10 * time.Second):
+		t.Error("task did not complete in time")
 	}
 }
 
-func TestWriteToFileJob(t *testing.T) {
-	s := schedulr.SchedulerInit()
-	s.Start()
-	defer s.ShutDown()
+func TestTaskTimeout(t *testing.T) {
+	sch := schedulr.SchedulerInit()
+	defer sch.ShutDown()
 
-	done := make(chan struct{})
-
-	job := func() error {
-		f, err := os.CreateTemp("", "jobtest-*.txt")
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		_, err = f.WriteString("ran at: " + time.Now().String())
-		close(done)
-		return err
-	}
-	task := schedulr.NewTask(2*time.Second, job)
-	s.Submit(task)
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("file job did not finish")
-	}
-}
-
-func TestComputePrimeJob(t *testing.T) {
-	s := schedulr.SchedulerInit()
-	s.Start()
-	defer s.ShutDown()
-
-	done := make(chan struct{})
-
-	job := func() error {
-		count := 0
-		for i := 2; i < 10000; i++ {
-			isPrime := true
-			for j := 2; j*j <= i; j++ {
-				if i%j == 0 {
-					isPrime = false
-					break
-				}
-			}
-			if isPrime {
-				count++
-			}
-		}
-		t.Log("prime count:", count)
-		close(done)
+	task := schedulr.NewTask(500*time.Millisecond, func() error {
+		time.Sleep(2 * time.Second)
 		return nil
-	}
+	}, 5)
 
-	task := schedulr.NewTask(1*time.Second, job)
-	s.Submit(task)
+	sch.Submit(task)
 
-	select {
-	case <-done:
-		t.Log("job completed on schedule")
-	case <-time.After(2 * time.Second):
-		t.Fatal("job timed out")
-	}
+	time.Sleep(3 * time.Second)
 }
 
-func TestSchedulrScheduledAt(t *testing.T) {
-	s := schedulr.SchedulerInit()
+func TestScheduleOnce(t *testing.T) {
+	sch := schedulr.SchedulerInit()
+	defer sch.ShutDown()
 
-	s.Start()
-	defer s.ShutDown()
+	done := make(chan bool)
 
-	done := make(chan struct{})
-	job := func() error {
-		t.Log("Scheduled job ran at", time.Now())
-		close(done)
+	_, err := sch.ScheduleOnce(func() error {
+		fmt.Println("[ScheduledOnce] Executed")
+		done <- true
 		return nil
-	}
-	runAt := time.Now().Add(1 * time.Second)
-
-	id, err := s.ScheduleOnce(job, runAt)
-
-	if id == "" {
-		t.Error("no id generated for task scheduled")
-	}
+	}, time.Now().Add(1*time.Second))
 
 	if err != nil {
-		t.Error("error should be nil")
+		t.Fatalf("failed to schedule once: %v", err)
 	}
 
 	select {
 	case <-done:
-		t.Log("job completed on schedule")
-	case <-time.After(2 * time.Second):
-		t.Fatal("❌ scheduled job did not run in time")
+	case <-time.After(5 * time.Second):
+		t.Error("scheduled-once task did not execute")
 	}
 }
 
-func TestSchedulrScheduledTck(t *testing.T) {
-	s := schedulr.SchedulerInit()
+func TestScheduleRecurringAndCancel(t *testing.T) {
+	sch := schedulr.SchedulerInit()
+	defer sch.ShutDown()
 
-	s.Start()
-	defer s.ShutDown()
+	count := 0
+	done := make(chan bool)
 
-	var count int32
-	job := func() error {
-		atomic.AddInt32(&count, 1)
-		t.Log("interval job ran")
+	id, err := sch.ScheduleRecurring(func() error {
+		count++
+		fmt.Printf("[Recurring] Run #%d\n", count)
+		if count >= 3 {
+			done <- true
+		}
 		return nil
-	}
-	id, err := s.ScheduleRecurring(job, 300*time.Millisecond)
-	if id == "" {
-		t.Error("no id generated for task scheduled")
-	}
+	}, 1*time.Second)
+
 	if err != nil {
-		t.Error("error should be nil")
+		t.Fatalf("failed to schedule recurring: %v", err)
 	}
-	// Wait up to 1.2s (expect at least 3 runs)
-	time.Sleep(1250 * time.Millisecond)
-	s.Cancel(id)
-	if atomic.LoadInt32(&count) < 3 {
-		t.Fatalf("expected at least 3 runs, got %d", count)
-	}
-	t.Logf("interval job ran %d times", count)
-}
-func TestDelayedJob(t *testing.T) {
-	s := schedulr.SchedulerInit()
-	s.Start()
-	defer s.ShutDown()
-
-	done := make(chan struct{})
-
-	job := func() error {
-		fmt.Println("delayed job ran at", time.Now())
-		close(done)
-		return nil
-	}
-
-	task := schedulr.NewTask(1*time.Second, job)
-	go func() {
-		time.Sleep(3 * time.Second)
-		s.Submit(task)
-	}()
 
 	select {
 	case <-done:
-		t.Log("job completed on schedule")
-	case <-time.After(4 * time.Second):
-		t.Fatal("delayed job did not run")
+		_ = sch.Cancel(id)
+	case <-time.After(5 * time.Second):
+		t.Error("recurring task did not complete expected runs")
 	}
 }
 
-// test error jobs
-// func TestFlakyJob(t *testing.T) {
-// 	s, _ := schedulr.SchedulerInit()
-// 	s.Start()
-// 	defer s.ShutDown()
+func TestCancelScheduledTask(t *testing.T) {
+	sch := schedulr.SchedulerInit()
+	defer sch.ShutDown()
 
-// 	done := make(chan struct{})
+	executed := false
 
-// 	job := func() error {
-// 		defer close(done)
-// 		if rand.Intn(2) == 0 {
-// 			return fmt.Errorf("flaky failure")
-// 		}
-// 		fmt.Println("job succeeded")
-// 		return nil
-// 	}
+	id, err := sch.ScheduleOnce(func() error {
+		executed = true
+		return nil
+	}, time.Now().Add(2*time.Second))
 
-// 	s.AddJobs(schedulr.Task{Job: job})
+	if err != nil {
+		t.Fatalf("failed to schedule task: %v", err)
+	}
 
-// 	select {
-// 	case <-done:
-// 	case <-time.After(2 * time.Second):
-// 		t.Fatal("flaky job did not return")
-// 	}
-// }
+	err = sch.Cancel(id)
+	if err != nil {
+		t.Fatalf("failed to cancel task: %v", err)
+	}
+
+	time.Sleep(3 * time.Second)
+
+	if executed {
+		t.Error("task executed after being canceled")
+	}
+}
+
+func TestPriorityTaskExecutionOrder(t *testing.T) {
+	executedOrder := []string{}
+
+	createJob := func(id string) schedulr.JobFunc {
+		return func() error {
+			executedOrder = append(executedOrder, id)
+			return nil
+		}
+	}
+
+	sch := schedulr.SchedulerInit()
+	defer sch.ShutDown()
+
+	taskLow := schedulr.NewTask(2*time.Second, createJob("low"), 1)
+	taskMid := schedulr.NewTask(2*time.Second, createJob("mid"), 5)
+	taskHigh := schedulr.NewTask(2*time.Second, createJob("high"), 10)
+
+	sch.Submit(taskLow)
+	sch.Submit(taskMid)
+	sch.Submit(taskHigh)
+
+	time.Sleep(6 * time.Second)
+
+	expected := []string{"high", "mid", "low"}
+	if len(executedOrder) != 3 {
+		t.Fatalf("expected 3 tasks to run, got %d", len(executedOrder))
+	}
+	for i := range expected {
+		if executedOrder[i] != expected[i] {
+			t.Errorf("expected task %s at position %d, got %s", expected[i], i, executedOrder[i])
+		}
+	}
+}

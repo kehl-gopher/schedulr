@@ -1,59 +1,145 @@
 package schedulr
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"sync"
 	"time"
 )
 
+// --------------------------------------- task queue ---------------------------------
+
+type taskQueue []*task
+
+func (tsk *taskQueue) Push(ts interface{}) {
+	t := ts.(*task)
+	*tsk = append(*tsk, t)
+}
+
+func (tsk *taskQueue) Pop() interface{} {
+	taskLen := tsk.Len()
+	if taskLen == 0 {
+		return nil
+	}
+
+	oldTsk := *tsk
+	item := oldTsk[taskLen-1]
+	oldTsk[taskLen-1] = nil
+	*tsk = oldTsk[:taskLen-1]
+	return item
+}
+
+func (tsk *taskQueue) Len() int {
+	return len(*tsk)
+}
+
+func (tsk taskQueue) Less(i, j int) bool {
+	return tsk[i].priority > tsk[j].priority
+}
+
+func (tsk taskQueue) Swap(i, j int) {
+	tsk[i], tsk[j] = tsk[j], tsk[i]
+}
+
+// -------------------------------------- Job run ----------------------------------------
 type JobFunc func() error
 
 type Scheduler interface {
-	Start()
+	scaleWorker()
 	ShutDown() error
 	ScheduleOnce(job JobFunc, at time.Time) (string, error)
 	ScheduleRecurring(job JobFunc, interval time.Duration) (string, error)
 	Submit(t task) string
 	Cancel(id string) error
+	dequeueAndRun()
+	executeTask(n int)
 }
 
 type schedulr struct {
-	schedulrLock *sync.Mutex
-	tasks        map[string]task
-	jobQueue     chan task
-	stopChan     chan struct{}
-	wg           *sync.WaitGroup
+	schedulrLock  *sync.Mutex
+	queueTask     taskQueue
+	tasks         map[string]task
+	jobQueue      chan task
+	stopChan      chan struct{}
+	currentWorker int
+	wg            *sync.WaitGroup
 }
 
 type task struct {
 	id          string
 	job         JobFunc
 	taskTimeOut time.Duration
+	priority    int
 	cancel      context.CancelFunc
 }
 
 func SchedulerInit() Scheduler {
 	sch := &schedulr{
-		schedulrLock: new(sync.Mutex),
-		tasks:        make(map[string]task),
-		jobQueue:     make(chan task, 100),
-		stopChan:     make(chan struct{}),
-		wg:           new(sync.WaitGroup),
+		schedulrLock:  new(sync.Mutex),
+		tasks:         make(map[string]task),
+		jobQueue:      make(chan task, 100),
+		queueTask:     make(taskQueue, 0),
+		stopChan:      make(chan struct{}),
+		currentWorker: 0,
+		wg:            new(sync.WaitGroup),
 	}
-
+	go sch.dequeueAndRun()
+	go sch.scaleWorker()
 	return sch
 }
 
-func (s *schedulr) Start() {
-	for i := 1; i <= 5; i++ {
-		s.wg.Add(1)
+func (s *schedulr) dequeueAndRun() {
+	for {
+		s.schedulrLock.Lock()
+		if s.queueTask.Len() > 0 {
+			task := heap.Pop(&s.queueTask).(*task)
+			s.schedulrLock.Unlock()
+			s.jobQueue <- *task
+		} else {
+			s.schedulrLock.Unlock()
+			time.Sleep(100 * time.Millisecond)
+		}
+		select {
+		case <-s.stopChan:
+			return
+		default:
+		}
+	}
+}
+
+func (sch *schedulr) scaleWorker() {
+	tick := time.NewTicker(3 * time.Second)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-tick.C:
+			sch.schedulrLock.Lock()
+			workers := calculateWorkerPertTask(sch.queueTask.Len())
+			if workers > sch.currentWorker {
+				w := workers - sch.currentWorker
+				sch.schedulrLock.Unlock()
+				sch.executeTask(w)
+			} else {
+				sch.schedulrLock.Unlock()
+			}
+		case <-sch.stopChan:
+			return
+		}
+	}
+}
+
+func (sch *schedulr) executeTask(n int) {
+	for i := 0; i < n; i++ {
+		sch.wg.Add(1)
 		go func() {
-			defer s.wg.Done()
+			defer sch.wg.Done()
 			for {
 				select {
-				case task, ok := <-s.jobQueue:
+				case task, ok := <-sch.jobQueue:
 					if ok {
+						fmt.Printf("[Task %s] Starting with priority %d\n", task.id, task.priority)
 						var done = make(chan error)
 						ctx, cancel := context.WithTimeout(context.Background(), task.taskTimeOut)
 						defer cancel()
@@ -61,15 +147,16 @@ func (s *schedulr) Start() {
 							done <- task.job()
 						}()
 						select {
-						case <-ctx.Done():
-							fmt.Printf("task with %s timeout", task.id)
 						case err := <-done:
 							if err != nil {
-								fmt.Printf("task id %s: failed to run task: %s", task.id, err.Error())
+								fmt.Printf("[Task %s] failed executing err: %s", task.id, err.Error())
 							}
+						case <-ctx.Done():
+							// will handle task retries later on
+							fmt.Printf("task timeout before finishing execution")
 						}
 					}
-				case <-s.stopChan:
+				case <-sch.stopChan:
 					return
 				}
 			}
@@ -77,8 +164,8 @@ func (s *schedulr) Start() {
 	}
 }
 
-func NewTask(timeOut time.Duration, job JobFunc) task {
-	return task{id: generateId(), taskTimeOut: timeOut, job: job}
+func NewTask(timeOut time.Duration, job JobFunc, priority int) task {
+	return task{id: generateId(), taskTimeOut: timeOut, job: job, priority: priority}
 }
 
 func (s *schedulr) ScheduleOnce(job JobFunc, at time.Time) (string, error) {
@@ -110,7 +197,9 @@ func (s *schedulr) ScheduleOnce(job JobFunc, at time.Time) (string, error) {
 }
 
 func (s *schedulr) Submit(t task) string {
-	s.jobQueue <- t
+	s.schedulrLock.Lock()
+	heap.Push(&s.queueTask, &t)
+	s.schedulrLock.Unlock()
 	return t.id
 }
 
