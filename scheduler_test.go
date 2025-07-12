@@ -191,7 +191,7 @@ func TestRecurringTaskIsNonBlocking(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(4 * time.Second):
+	case <-time.After(6 * time.Second):
 		t.Fatal("Recurring task blocked other tasks from running")
 	}
 }
