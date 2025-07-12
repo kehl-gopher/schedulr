@@ -1,8 +1,3 @@
-Here’s a complete and professional `README.md` for your **Task Scheduler** package, covering usage, design, features, and setup:
-
----
-
-````markdown
 # 🕒 schedulr — Go Task Scheduler
 
 `schedulr` is a priority-based task scheduler written in Go. It supports one-time and recurring task execution, dynamic worker scaling, timeout handling, and task cancellation — all without a single external dependency.
@@ -26,6 +21,7 @@ Here’s a complete and professional `README.md` for your **Task Scheduler** pac
 ```bash
 go get github.com/kehl-gopher/schedulr
 ```
+
 ````
 
 ---
@@ -127,3 +123,4 @@ Includes:
 - Running background jobs (e.g., emails, billing)
 - Queueing delayed tasks (e.g., notifications)
 - Real-time task dispatchers with load-based scaling
+````
