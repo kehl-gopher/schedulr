@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -62,7 +63,7 @@ type schedulr struct {
 	tasks         map[string]task
 	jobQueue      chan task
 	stopChan      chan struct{}
-	currentWorker int
+	currentWorker int32
 	wg            *sync.WaitGroup
 }
 
@@ -117,8 +118,8 @@ func (sch *schedulr) scaleWorker() {
 		case <-tick.C:
 			sch.schedulrLock.Lock()
 			workers := calculateWorkerPertTask(sch.queueTask.Len())
-			if workers > sch.currentWorker {
-				w := workers - sch.currentWorker
+			if workers > int(sch.currentWorker) {
+				w := workers - int(sch.currentWorker)
 				sch.schedulrLock.Unlock()
 				sch.executeTask(w)
 			} else {
@@ -132,6 +133,7 @@ func (sch *schedulr) scaleWorker() {
 
 func (sch *schedulr) executeTask(n int) {
 	for i := 0; i < n; i++ {
+		atomic.AddInt32(&sch.currentWorker, 1)
 		sch.wg.Add(1)
 		go func() {
 			defer sch.wg.Done()
