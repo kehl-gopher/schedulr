@@ -22,8 +22,6 @@
 go get github.com/kehl-gopher/schedulr
 ```
 
-````
-
 ---
 
 ## 🚀 Getting Started
@@ -123,4 +121,3 @@ Includes:
 - Running background jobs (e.g., emails, billing)
 - Queueing delayed tasks (e.g., notifications)
 - Real-time task dispatchers with load-based scaling
-````
