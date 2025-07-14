@@ -19,7 +19,7 @@
 ## 📦 Installation
 
 ```bash
-go get github.com/kehl-gopher/schedulr
+go get github.com/kehl-gopher/skedulr
 ```
 
 ---
